@@ -22,7 +22,8 @@ export interface StringAnalysisResult {
  */
 export function analyzeStringsForTranslation(
   xcstringsData: XCStrings,
-  targetLanguages: string[]
+  targetLanguages: string[],
+  sourceLanguageForText?: string
 ): StringAnalysisResult {
   // Create a deep copy to avoid modifying the original
   const modifiedXcstringsData = JSON.parse(JSON.stringify(xcstringsData));
@@ -83,9 +84,14 @@ export function analyzeStringsForTranslation(
 
     // If any languages need translation, add to requests
     if (languagesNeeded.length > 0) {
+      const sourceTextCandidate = sourceLanguageForText
+        ? currentStringEntry.localizations?.[sourceLanguageForText]?.stringUnit?.value?.trim()
+        : undefined;
+      const sourceText = sourceTextCandidate && sourceTextCandidate.length > 0 ? sourceTextCandidate : key;
+
       translationRequests.push({
         key: key,
-        text: key,
+        text: sourceText,
         targetLanguages: languagesNeeded,
         comment: currentStringEntry.comment
       });

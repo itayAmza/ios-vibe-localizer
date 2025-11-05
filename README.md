@@ -56,6 +56,7 @@ jobs:
         uses: eilonkr/ios-vibe-localization@v1.0.0
         with:
           xcstrings_file_path: 'Localizable.xcstrings' # Path to your String Catalog in your project
+          source_language: 'en' # Optional: source locale for Text; when omitted, the key is used
           target_languages: 'es,fr,de,ja,ko' # Customize as needed
           openai_model: 'gpt-4o-mini' # Customize as needed
           base_system_prompt: 'You are translating for a fitness app. Use casual, motivational language.' # An additional system prompt for LLM context (optional)
@@ -69,6 +70,7 @@ jobs:
 | Input | Required | Default | Description |
 |-------|----------|---------|-------------|
 | `xcstrings_file_path` | No | `Localizable.xcstrings` | Path to your String Catalog file |
+| `source_language` | No | - | Language code to use as the source text (e.g., `en`). When omitted, the string key is used. |
 | `target_languages` | Yes | - | Comma-separated language codes (e.g., `es,fr,de`) |
 | `github_token` | Yes | - | GitHub token for creating PRs |
 | `openai_model` | No | `gpt-4o-mini` | OpenAI model to use |

@@ -8,6 +8,10 @@ inputs:
     description: 'Path to the Localizable.xcstrings file.'
     required: false
     default: 'Localizable.xcstrings'
+  source_language:
+    description: 'Language code to use as the source text (e.g., en). When omitted, the key is used.'
+    required: false
+    default: ''
   target_languages:
     description: 'Comma-separated list of language codes to translate into (e.g., es,fr,de).'
     required: true
