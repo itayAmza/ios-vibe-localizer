@@ -35702,8 +35702,8 @@ exports.analyzeStringsForTranslation = analyzeStringsForTranslation;
  * @param targetLanguages Array of target language codes to translate to
  * @returns Analysis result containing translation requests and change tracking
  */
-function analyzeStringsForTranslation(xcstringsData, targetLanguages) {
-    var _a, _b;
+function analyzeStringsForTranslation(xcstringsData, targetLanguages, sourceLanguageForText) {
+    var _a, _b, _c, _d, _e, _f;
     // Create a deep copy to avoid modifying the original
     const modifiedXcstringsData = JSON.parse(JSON.stringify(xcstringsData));
     const translationRequests = [];
@@ -35752,9 +35752,13 @@ function analyzeStringsForTranslation(xcstringsData, targetLanguages) {
         }
         // If any languages need translation, add to requests
         if (languagesNeeded.length > 0) {
+            const sourceTextCandidate = sourceLanguageForText
+                ? (_f = (_e = (_d = (_c = currentStringEntry.localizations) === null || _c === void 0 ? void 0 : _c[sourceLanguageForText]) === null || _d === void 0 ? void 0 : _d.stringUnit) === null || _e === void 0 ? void 0 : _e.value) === null || _f === void 0 ? void 0 : _f.trim()
+                : undefined;
+            const sourceText = sourceTextCandidate && sourceTextCandidate.length > 0 ? sourceTextCandidate : key;
             translationRequests.push({
                 key: key,
-                text: key,
+                text: sourceText,
                 targetLanguages: languagesNeeded,
                 comment: currentStringEntry.comment
             });
@@ -35834,6 +35838,7 @@ async function run() {
         const targetLanguages = targetLanguagesInput.split(',').map(lang => lang.trim()).filter(lang => lang);
         const openaiModel = core.getInput('openai_model', { required: false }) || 'gpt-4o-mini';
         const baseSystemPrompt = core.getInput('base_system_prompt', { required: false }) || '';
+        const sourceLanguageInput = core.getInput('source_language', { required: false }) || '';
         core.info(`XCStrings file: ${xcstringsFilePath}`);
         core.info(`Target languages: ${targetLanguages.join(', ')}`);
         core.info(`OpenAI model: ${openaiModel}`);
@@ -35861,15 +35866,22 @@ async function run() {
             return;
         }
         core.info(`Successfully parsed ${xcstringsFilePath} from HEAD. Found ${Object.keys(currentXcstringsData.strings).length} string keys.`);
+        const effectiveSourceLanguage = (sourceLanguageInput || currentXcstringsData.sourceLanguage || 'en').trim();
+        if (sourceLanguageInput) {
+            core.info(`Source language (from input): ${effectiveSourceLanguage}`);
+        }
+        else {
+            core.info(`Source language (from catalog/default): ${effectiveSourceLanguage}`);
+        }
         // Analyze strings to determine what needs translation
-        const analysisResult = (0, stringAnalyzer_1.analyzeStringsForTranslation)(currentXcstringsData, targetLanguages);
+        const analysisResult = (0, stringAnalyzer_1.analyzeStringsForTranslation)(currentXcstringsData, targetLanguages, sourceLanguageInput || undefined);
         const { translationRequests, translationChanges, stringTranslationMap, modifiedXcstringsData: updatedXcstringsData, xcstringsModified } = analysisResult;
         for (const key of translationChanges.staleRemoved) {
             core.info(`Removed stale string entry: ${key}`);
         }
         if (translationRequests.length > 0) {
             core.info(`Found ${translationRequests.length} strings requiring translation. Processing in batch...`);
-            const batchResponse = await (0, localizationManager_1.fetchBatchTranslations)(translationRequests, updatedXcstringsData.sourceLanguage, openaiModel, baseSystemPrompt);
+            const batchResponse = await (0, localizationManager_1.fetchBatchTranslations)(translationRequests, effectiveSourceLanguage, openaiModel, baseSystemPrompt);
             for (const translationResult of batchResponse.translations) {
                 const key = translationResult.key;
                 const stringEntry = updatedXcstringsData.strings[key];
@@ -35948,6 +35960,7 @@ async function run() {
         if (baseSystemPrompt) {
             core.info(`Base system prompt: ${baseSystemPrompt}`);
         }
+        core.info(`Effective source language: ${effectiveSourceLanguage}`);
         if (translationChanges.added.length > 0 || translationChanges.updated.length > 0 || translationChanges.staleRemoved.length > 0) {
             core.info(`Translation changes:`);
             if (translationChanges.added.length > 0) {
