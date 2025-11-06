@@ -10,6 +10,7 @@ export interface StringAnalysisResult {
   stringTranslationMap: Map<string, { languages: string[], isNew: Map<string, boolean> }>;
   modifiedXcstringsData: XCStrings;
   xcstringsModified: boolean;
+  fallbackToKeyCount: number;
 }
 
 /**
@@ -22,7 +23,8 @@ export interface StringAnalysisResult {
  */
 export function analyzeStringsForTranslation(
   xcstringsData: XCStrings,
-  targetLanguages: string[]
+  targetLanguages: string[],
+  sourceLanguageForText?: string
 ): StringAnalysisResult {
   // Create a deep copy to avoid modifying the original
   const modifiedXcstringsData = JSON.parse(JSON.stringify(xcstringsData));
@@ -35,6 +37,7 @@ export function analyzeStringsForTranslation(
   };
   const stringTranslationMap: Map<string, { languages: string[], isNew: Map<string, boolean> }> = new Map();
   let xcstringsModified = false;
+  let fallbackToKeyCount = 0;
 
   for (const key in modifiedXcstringsData.strings) {
     const currentStringEntry = modifiedXcstringsData.strings[key];
@@ -52,7 +55,7 @@ export function analyzeStringsForTranslation(
       continue;
     }
 
-    // Initialize localizations if not present (only for strings that will be processed)
+    // Ensure localizations object exists to avoid undefined checks later
     if (!currentStringEntry.localizations) {
       currentStringEntry.localizations = {};
     }
@@ -62,30 +65,34 @@ export function analyzeStringsForTranslation(
 
     // Check each target language to see if translation is needed
     for (const lang of targetLanguages) {
-      const needsTranslationForLang = 
-        !currentStringEntry.localizations[lang] || 
-        !currentStringEntry.localizations[lang]?.stringUnit ||
-        !currentStringEntry.localizations[lang]?.stringUnit.value;
+      const targetLocalization = currentStringEntry.localizations[lang];
+      const targetStringUnit = targetLocalization?.stringUnit;
+      const isMissingOrEmpty = !targetStringUnit || !targetStringUnit.value || targetStringUnit.value.trim().length === 0;
+      const isNeedsReview = targetStringUnit?.state === 'needs_review';
+
+      const needsTranslationForLang = isMissingOrEmpty || isNeedsReview;
 
       if (needsTranslationForLang) {
-        const isNewTranslation = !currentStringEntry.localizations[lang];
+        const isNewTranslation = !targetLocalization;
         languagesNeeded.push(lang);
         isNewMap.set(lang, isNewTranslation);
-        
-        // Initialize the localization structure if it doesn't exist
-        if (!currentStringEntry.localizations[lang]) {
-          currentStringEntry.localizations[lang] = { 
-            stringUnit: { state: 'translated', value: '' } 
-          };
-        }
       }
     }
 
     // If any languages need translation, add to requests
     if (languagesNeeded.length > 0) {
+      const sourceTextCandidate = sourceLanguageForText
+        ? currentStringEntry.localizations?.[sourceLanguageForText]?.stringUnit?.value?.trim()
+        : undefined;
+      const useKeyFallback = !sourceTextCandidate || sourceTextCandidate.length === 0;
+      if (useKeyFallback) {
+        fallbackToKeyCount += 1;
+      }
+      const sourceText = useKeyFallback ? key : (sourceTextCandidate as string);
+
       translationRequests.push({
         key: key,
-        text: key,
+        text: sourceText,
         targetLanguages: languagesNeeded,
         comment: currentStringEntry.comment
       });
@@ -98,6 +105,7 @@ export function analyzeStringsForTranslation(
     translationChanges,
     stringTranslationMap,
     modifiedXcstringsData,
-    xcstringsModified
+    xcstringsModified,
+    fallbackToKeyCount
   };
 } 

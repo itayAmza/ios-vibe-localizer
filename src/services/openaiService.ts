@@ -43,7 +43,7 @@ export class OpenAIService {
     // Get all unique target languages from all requests
     const allTargetLanguages = [...new Set(requests.flatMap(req => req.targetLanguages))];
     
-    core.info(`Requesting batch translation for ${requests.length} strings from ${sourceLanguage} to languages: ${allTargetLanguages.join(', ')}`);
+    core.info(`Requesting batch translation for ${requests.length} strings from ${sourceLanguage} to languages: ${allTargetLanguages.join(', ')} (temperature=0)`);
 
     // Create the schema for structured output
     const translationSchema = {
@@ -113,6 +113,7 @@ Return the translations in the exact JSON structure specified.`;
       const chatCompletion = await openai.chat.completions.create({
         model: this.model,
         messages: messages,
+        temperature: 0,
         response_format: {
           type: "json_schema",
           json_schema: {
@@ -129,12 +130,51 @@ Return the translations in the exact JSON structure specified.`;
       }
 
       const batchResponse: BatchTranslationResponse = JSON.parse(responseContent);
-      
+      // Diagnostics: usage and finish reason
+      const finishReason = chatCompletion.choices?.[0]?.finish_reason ?? 'unknown';
+      const usage = (chatCompletion as any).usage;
+      if (usage) {
+        core.info(`OpenAI usage: prompt=${usage.prompt_tokens}, completion=${usage.completion_tokens}, total=${usage.total_tokens}; finish_reason=${finishReason}`);
+      } else {
+        core.info(`OpenAI usage unavailable; finish_reason=${finishReason}`);
+      }
+
+      // Diagnostics: requested vs received and missing keys
+      const requestedKeys = requests.map(r => r.key);
+      const receivedKeys = new Set(batchResponse.translations.map(t => t.key));
+      const missingKeys = requestedKeys.filter(k => !receivedKeys.has(k));
+      core.info(`Requested: ${requestedKeys.length}, Received: ${receivedKeys.size}`);
+      if (missingKeys.length > 0) {
+        const preview = missingKeys.slice(0, 10);
+        core.info(`Missing keys (first ${preview.length}): [${preview.join(', ')}]`);
+      }
+
       core.info(`Received batch translations for ${batchResponse.translations.length} strings`);
       return batchResponse;
 
     } catch (error) {
-      core.error(`Error in batch translation: ${error instanceof Error ? error.message : String(error)}`);
+      const errAny = error as any;
+      const status = errAny?.status ?? errAny?.response?.status;
+      const type = errAny?.error?.type ?? errAny?.response?.data?.error?.type;
+      const message = errAny?.message ?? errAny?.error?.message ?? errAny?.response?.data?.error?.message;
+      core.error(`Error in batch translation${status ? ` (${status})` : ''}${type ? ` ${type}` : ''}: ${message ?? String(error)}`);
+
+      const headers = errAny?.headers ?? errAny?.response?.headers;
+      if (headers) {
+        const rateHeaders: string[] = [];
+        for (const k of Object.keys(headers)) {
+          if (k.toLowerCase().startsWith('x-ratelimit') || k.toLowerCase() === 'retry-after') {
+            rateHeaders.push(`${k}=${headers[k]}`);
+          }
+        }
+        if (rateHeaders.length > 0) {
+          core.error(`Rate-limit headers: ${rateHeaders.join(', ')}`);
+        } else {
+          core.error('Rate-limit headers: unavailable');
+        }
+      } else {
+        core.error('Response headers unavailable');
+      }
       throw error;
     }
   }

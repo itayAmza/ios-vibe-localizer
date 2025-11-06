@@ -23,6 +23,7 @@ async function run(): Promise<void> {
     const targetLanguages = targetLanguagesInput.split(',').map(lang => lang.trim()).filter(lang => lang);
     const openaiModel = core.getInput('openai_model', { required: false }) || 'gpt-4o-mini';
     const baseSystemPrompt = core.getInput('base_system_prompt', { required: false }) || '';
+    const sourceLanguageInput = core.getInput('source_language', { required: false }) || '';
 
     core.info(`XCStrings file: ${xcstringsFilePath}`);
     core.info(`Target languages: ${targetLanguages.join(', ')}`);
@@ -55,14 +56,22 @@ async function run(): Promise<void> {
     }
     core.info(`Successfully parsed ${xcstringsFilePath} from HEAD. Found ${Object.keys(currentXcstringsData.strings).length} string keys.`);
 
+    const effectiveSourceLanguage = (sourceLanguageInput || currentXcstringsData.sourceLanguage || 'en').trim();
+    if (sourceLanguageInput) {
+      core.info(`Source language (from input): ${effectiveSourceLanguage}`);
+    } else {
+      core.info(`Source language (from catalog/default): ${effectiveSourceLanguage}`);
+    }
+
     // Analyze strings to determine what needs translation
-    const analysisResult = analyzeStringsForTranslation(currentXcstringsData, targetLanguages);
+    const analysisResult = analyzeStringsForTranslation(currentXcstringsData, targetLanguages, sourceLanguageInput || undefined);
     const { 
       translationRequests, 
       translationChanges,
       stringTranslationMap, 
       modifiedXcstringsData: updatedXcstringsData, 
-      xcstringsModified 
+      xcstringsModified,
+      fallbackToKeyCount
     } = analysisResult;
 
     for (const key of translationChanges.staleRemoved) {
@@ -72,7 +81,7 @@ async function run(): Promise<void> {
     if (translationRequests.length > 0) {
       core.info(`Found ${translationRequests.length} strings requiring translation. Processing in batch...`);
 
-      const batchResponse = await fetchBatchTranslations(translationRequests, updatedXcstringsData.sourceLanguage, openaiModel, baseSystemPrompt);
+      const batchResponse = await fetchBatchTranslations(translationRequests, effectiveSourceLanguage, openaiModel, baseSystemPrompt);
 
       for (const translationResult of batchResponse.translations) {
         const key = translationResult.key;
@@ -86,10 +95,23 @@ async function run(): Promise<void> {
 
         for (const [lang, translatedValue] of Object.entries(translationResult.translations)) {
           if (translationInfo.languages.includes(lang)) {
-            stringEntry.localizations![lang]!.stringUnit = {
-              state: "translated",
-              value: translatedValue
-            };
+            const valueTrimmed = (translatedValue ?? '').trim();
+            if (!valueTrimmed) {
+              core.warning(`Skipping empty translation — key="${key}", lang=${lang}, reason=empty translation`);
+              continue;
+            }
+
+            if (!stringEntry.localizations) {
+              stringEntry.localizations = {};
+            }
+            if (!stringEntry.localizations[lang]) {
+              stringEntry.localizations[lang] = { stringUnit: { state: 'translated', value: valueTrimmed } };
+            } else {
+              stringEntry.localizations[lang]!.stringUnit = {
+                state: "translated",
+                value: valueTrimmed
+              };
+            }
             
             const changeKey = `${key} (${lang})`;
             if (translationInfo.isNew.get(lang)) {
@@ -158,6 +180,10 @@ async function run(): Promise<void> {
     core.info(`OpenAI model used: ${openaiModel}`);
     if (baseSystemPrompt) {
       core.info(`Base system prompt: ${baseSystemPrompt}`);
+    }
+    core.info(`Effective source language: ${effectiveSourceLanguage}`);
+    if (fallbackToKeyCount > 0) {
+      core.info(`Using key as source for ${fallbackToKeyCount} items (missing/empty source-language value).`);
     }
     
     if (translationChanges.added.length > 0 || translationChanges.updated.length > 0 || translationChanges.staleRemoved.length > 0) {

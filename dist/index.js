@@ -35702,8 +35702,8 @@ exports.analyzeStringsForTranslation = analyzeStringsForTranslation;
  * @param targetLanguages Array of target language codes to translate to
  * @returns Analysis result containing translation requests and change tracking
  */
-function analyzeStringsForTranslation(xcstringsData, targetLanguages) {
-    var _a, _b;
+function analyzeStringsForTranslation(xcstringsData, targetLanguages, sourceLanguageForText) {
+    var _a, _b, _c, _d;
     // Create a deep copy to avoid modifying the original
     const modifiedXcstringsData = JSON.parse(JSON.stringify(xcstringsData));
     const translationRequests = [];
@@ -35714,6 +35714,7 @@ function analyzeStringsForTranslation(xcstringsData, targetLanguages) {
     };
     const stringTranslationMap = new Map();
     let xcstringsModified = false;
+    let fallbackToKeyCount = 0;
     for (const key in modifiedXcstringsData.strings) {
         const currentStringEntry = modifiedXcstringsData.strings[key];
         // Remove stale entries
@@ -35727,7 +35728,7 @@ function analyzeStringsForTranslation(xcstringsData, targetLanguages) {
         if (currentStringEntry.shouldTranslate === false) {
             continue;
         }
-        // Initialize localizations if not present (only for strings that will be processed)
+        // Ensure localizations object exists to avoid undefined checks later
         if (!currentStringEntry.localizations) {
             currentStringEntry.localizations = {};
         }
@@ -35735,26 +35736,30 @@ function analyzeStringsForTranslation(xcstringsData, targetLanguages) {
         const isNewMap = new Map();
         // Check each target language to see if translation is needed
         for (const lang of targetLanguages) {
-            const needsTranslationForLang = !currentStringEntry.localizations[lang] ||
-                !((_a = currentStringEntry.localizations[lang]) === null || _a === void 0 ? void 0 : _a.stringUnit) ||
-                !((_b = currentStringEntry.localizations[lang]) === null || _b === void 0 ? void 0 : _b.stringUnit.value);
+            const targetLocalization = currentStringEntry.localizations[lang];
+            const targetStringUnit = targetLocalization === null || targetLocalization === void 0 ? void 0 : targetLocalization.stringUnit;
+            const isMissingOrEmpty = !targetStringUnit || !targetStringUnit.value || targetStringUnit.value.trim().length === 0;
+            const isNeedsReview = (targetStringUnit === null || targetStringUnit === void 0 ? void 0 : targetStringUnit.state) === 'needs_review';
+            const needsTranslationForLang = isMissingOrEmpty || isNeedsReview;
             if (needsTranslationForLang) {
-                const isNewTranslation = !currentStringEntry.localizations[lang];
+                const isNewTranslation = !targetLocalization;
                 languagesNeeded.push(lang);
                 isNewMap.set(lang, isNewTranslation);
-                // Initialize the localization structure if it doesn't exist
-                if (!currentStringEntry.localizations[lang]) {
-                    currentStringEntry.localizations[lang] = {
-                        stringUnit: { state: 'translated', value: '' }
-                    };
-                }
             }
         }
         // If any languages need translation, add to requests
         if (languagesNeeded.length > 0) {
+            const sourceTextCandidate = sourceLanguageForText
+                ? (_d = (_c = (_b = (_a = currentStringEntry.localizations) === null || _a === void 0 ? void 0 : _a[sourceLanguageForText]) === null || _b === void 0 ? void 0 : _b.stringUnit) === null || _c === void 0 ? void 0 : _c.value) === null || _d === void 0 ? void 0 : _d.trim()
+                : undefined;
+            const useKeyFallback = !sourceTextCandidate || sourceTextCandidate.length === 0;
+            if (useKeyFallback) {
+                fallbackToKeyCount += 1;
+            }
+            const sourceText = useKeyFallback ? key : sourceTextCandidate;
             translationRequests.push({
                 key: key,
-                text: key,
+                text: sourceText,
                 targetLanguages: languagesNeeded,
                 comment: currentStringEntry.comment
             });
@@ -35766,7 +35771,8 @@ function analyzeStringsForTranslation(xcstringsData, targetLanguages) {
         translationChanges,
         stringTranslationMap,
         modifiedXcstringsData,
-        xcstringsModified
+        xcstringsModified,
+        fallbackToKeyCount
     };
 }
 
@@ -35834,6 +35840,7 @@ async function run() {
         const targetLanguages = targetLanguagesInput.split(',').map(lang => lang.trim()).filter(lang => lang);
         const openaiModel = core.getInput('openai_model', { required: false }) || 'gpt-4o-mini';
         const baseSystemPrompt = core.getInput('base_system_prompt', { required: false }) || '';
+        const sourceLanguageInput = core.getInput('source_language', { required: false }) || '';
         core.info(`XCStrings file: ${xcstringsFilePath}`);
         core.info(`Target languages: ${targetLanguages.join(', ')}`);
         core.info(`OpenAI model: ${openaiModel}`);
@@ -35861,15 +35868,22 @@ async function run() {
             return;
         }
         core.info(`Successfully parsed ${xcstringsFilePath} from HEAD. Found ${Object.keys(currentXcstringsData.strings).length} string keys.`);
+        const effectiveSourceLanguage = (sourceLanguageInput || currentXcstringsData.sourceLanguage || 'en').trim();
+        if (sourceLanguageInput) {
+            core.info(`Source language (from input): ${effectiveSourceLanguage}`);
+        }
+        else {
+            core.info(`Source language (from catalog/default): ${effectiveSourceLanguage}`);
+        }
         // Analyze strings to determine what needs translation
-        const analysisResult = (0, stringAnalyzer_1.analyzeStringsForTranslation)(currentXcstringsData, targetLanguages);
-        const { translationRequests, translationChanges, stringTranslationMap, modifiedXcstringsData: updatedXcstringsData, xcstringsModified } = analysisResult;
+        const analysisResult = (0, stringAnalyzer_1.analyzeStringsForTranslation)(currentXcstringsData, targetLanguages, sourceLanguageInput || undefined);
+        const { translationRequests, translationChanges, stringTranslationMap, modifiedXcstringsData: updatedXcstringsData, xcstringsModified, fallbackToKeyCount } = analysisResult;
         for (const key of translationChanges.staleRemoved) {
             core.info(`Removed stale string entry: ${key}`);
         }
         if (translationRequests.length > 0) {
             core.info(`Found ${translationRequests.length} strings requiring translation. Processing in batch...`);
-            const batchResponse = await (0, localizationManager_1.fetchBatchTranslations)(translationRequests, updatedXcstringsData.sourceLanguage, openaiModel, baseSystemPrompt);
+            const batchResponse = await (0, localizationManager_1.fetchBatchTranslations)(translationRequests, effectiveSourceLanguage, openaiModel, baseSystemPrompt);
             for (const translationResult of batchResponse.translations) {
                 const key = translationResult.key;
                 const stringEntry = updatedXcstringsData.strings[key];
@@ -35880,10 +35894,23 @@ async function run() {
                 }
                 for (const [lang, translatedValue] of Object.entries(translationResult.translations)) {
                     if (translationInfo.languages.includes(lang)) {
-                        stringEntry.localizations[lang].stringUnit = {
-                            state: "translated",
-                            value: translatedValue
-                        };
+                        const valueTrimmed = (translatedValue !== null && translatedValue !== void 0 ? translatedValue : '').trim();
+                        if (!valueTrimmed) {
+                            core.warning(`Skipping empty translation — key="${key}", lang=${lang}, reason=empty translation`);
+                            continue;
+                        }
+                        if (!stringEntry.localizations) {
+                            stringEntry.localizations = {};
+                        }
+                        if (!stringEntry.localizations[lang]) {
+                            stringEntry.localizations[lang] = { stringUnit: { state: 'translated', value: valueTrimmed } };
+                        }
+                        else {
+                            stringEntry.localizations[lang].stringUnit = {
+                                state: "translated",
+                                value: valueTrimmed
+                            };
+                        }
                         const changeKey = `${key} (${lang})`;
                         if (translationInfo.isNew.get(lang)) {
                             translationChanges.added.push(changeKey);
@@ -35947,6 +35974,10 @@ async function run() {
         core.info(`OpenAI model used: ${openaiModel}`);
         if (baseSystemPrompt) {
             core.info(`Base system prompt: ${baseSystemPrompt}`);
+        }
+        core.info(`Effective source language: ${effectiveSourceLanguage}`);
+        if (fallbackToKeyCount > 0) {
+            core.info(`Using key as source for ${fallbackToKeyCount} items (missing/empty source-language value).`);
         }
         if (translationChanges.added.length > 0 || translationChanges.updated.length > 0 || translationChanges.staleRemoved.length > 0) {
             core.info(`Translation changes:`);
@@ -36282,7 +36313,7 @@ class OpenAIService {
      * @returns A promise that resolves to the batch translation response.
      */
     async getBatchTranslations(requests, sourceLanguage = "en", baseSystemPrompt = "") {
-        var _a, _b;
+        var _a, _b, _c, _d, _e, _f, _g, _h, _j, _k, _l, _m, _o, _p, _q, _r, _s, _t, _u, _v;
         if (!openai) {
             throw new Error('OpenAI client not initialized. Please ensure OPENAI_API_KEY environment variable is set with a valid API key.');
         }
@@ -36291,7 +36322,7 @@ class OpenAIService {
         }
         // Get all unique target languages from all requests
         const allTargetLanguages = [...new Set(requests.flatMap(req => req.targetLanguages))];
-        core.info(`Requesting batch translation for ${requests.length} strings from ${sourceLanguage} to languages: ${allTargetLanguages.join(', ')}`);
+        core.info(`Requesting batch translation for ${requests.length} strings from ${sourceLanguage} to languages: ${allTargetLanguages.join(', ')} (temperature=0)`);
         // Create the schema for structured output
         const translationSchema = {
             type: "object",
@@ -36351,6 +36382,7 @@ Return the translations in the exact JSON structure specified.`;
             const chatCompletion = await openai.chat.completions.create({
                 model: this.model,
                 messages: messages,
+                temperature: 0,
                 response_format: {
                     type: "json_schema",
                     json_schema: {
@@ -36365,11 +36397,51 @@ Return the translations in the exact JSON structure specified.`;
                 throw new Error('No content in OpenAI response');
             }
             const batchResponse = JSON.parse(responseContent);
+            // Diagnostics: usage and finish reason
+            const finishReason = (_e = (_d = (_c = chatCompletion.choices) === null || _c === void 0 ? void 0 : _c[0]) === null || _d === void 0 ? void 0 : _d.finish_reason) !== null && _e !== void 0 ? _e : 'unknown';
+            const usage = chatCompletion.usage;
+            if (usage) {
+                core.info(`OpenAI usage: prompt=${usage.prompt_tokens}, completion=${usage.completion_tokens}, total=${usage.total_tokens}; finish_reason=${finishReason}`);
+            }
+            else {
+                core.info(`OpenAI usage unavailable; finish_reason=${finishReason}`);
+            }
+            // Diagnostics: requested vs received and missing keys
+            const requestedKeys = requests.map(r => r.key);
+            const receivedKeys = new Set(batchResponse.translations.map(t => t.key));
+            const missingKeys = requestedKeys.filter(k => !receivedKeys.has(k));
+            core.info(`Requested: ${requestedKeys.length}, Received: ${receivedKeys.size}`);
+            if (missingKeys.length > 0) {
+                const preview = missingKeys.slice(0, 10);
+                core.info(`Missing keys (first ${preview.length}): [${preview.join(', ')}]`);
+            }
             core.info(`Received batch translations for ${batchResponse.translations.length} strings`);
             return batchResponse;
         }
         catch (error) {
-            core.error(`Error in batch translation: ${error instanceof Error ? error.message : String(error)}`);
+            const errAny = error;
+            const status = (_f = errAny === null || errAny === void 0 ? void 0 : errAny.status) !== null && _f !== void 0 ? _f : (_g = errAny === null || errAny === void 0 ? void 0 : errAny.response) === null || _g === void 0 ? void 0 : _g.status;
+            const type = (_j = (_h = errAny === null || errAny === void 0 ? void 0 : errAny.error) === null || _h === void 0 ? void 0 : _h.type) !== null && _j !== void 0 ? _j : (_m = (_l = (_k = errAny === null || errAny === void 0 ? void 0 : errAny.response) === null || _k === void 0 ? void 0 : _k.data) === null || _l === void 0 ? void 0 : _l.error) === null || _m === void 0 ? void 0 : _m.type;
+            const message = (_q = (_o = errAny === null || errAny === void 0 ? void 0 : errAny.message) !== null && _o !== void 0 ? _o : (_p = errAny === null || errAny === void 0 ? void 0 : errAny.error) === null || _p === void 0 ? void 0 : _p.message) !== null && _q !== void 0 ? _q : (_t = (_s = (_r = errAny === null || errAny === void 0 ? void 0 : errAny.response) === null || _r === void 0 ? void 0 : _r.data) === null || _s === void 0 ? void 0 : _s.error) === null || _t === void 0 ? void 0 : _t.message;
+            core.error(`Error in batch translation${status ? ` (${status})` : ''}${type ? ` ${type}` : ''}: ${message !== null && message !== void 0 ? message : String(error)}`);
+            const headers = (_u = errAny === null || errAny === void 0 ? void 0 : errAny.headers) !== null && _u !== void 0 ? _u : (_v = errAny === null || errAny === void 0 ? void 0 : errAny.response) === null || _v === void 0 ? void 0 : _v.headers;
+            if (headers) {
+                const rateHeaders = [];
+                for (const k of Object.keys(headers)) {
+                    if (k.toLowerCase().startsWith('x-ratelimit') || k.toLowerCase() === 'retry-after') {
+                        rateHeaders.push(`${k}=${headers[k]}`);
+                    }
+                }
+                if (rateHeaders.length > 0) {
+                    core.error(`Rate-limit headers: ${rateHeaders.join(', ')}`);
+                }
+                else {
+                    core.error('Rate-limit headers: unavailable');
+                }
+            }
+            else {
+                core.error('Response headers unavailable');
+            }
             throw error;
         }
     }
